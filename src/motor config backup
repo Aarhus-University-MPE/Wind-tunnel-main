@@ -1,0 +1,163 @@
+#include <Arduino.h>
+#include <ModbusRTU.h>
+
+// RS485
+ModbusRTU mb;
+const uint8_t rs485DirectionPin = 3; // DE/RE pin on RS485 transceiver
+
+// Registers from motor manual
+#define REG_ID       100
+#define REG_OP_MODE  101
+#define REG_SPEED    102
+#define REG_MODE     902
+#define REG_POSTSIG  910  // Post-signal state
+#define REG_TIMEOUT  911  // No signal delay time
+
+// IDs
+uint8_t currentID = 2;  // default current ID
+uint8_t newID     = 2;  // default target ID
+
+volatile bool lastCmdSuccess = false;
+
+// Modbus callback
+bool cb(Modbus::ResultCode event, uint16_t, void*) {
+  lastCmdSuccess = (event == Modbus::EX_SUCCESS);
+  if (!lastCmdSuccess) {
+    Serial.print("Modbus error: 0x");
+    Serial.println(event, HEX);
+  }
+  return true;
+}
+
+// Write helper
+bool writeHreg(uint8_t id, uint16_t reg, uint16_t val) {
+  lastCmdSuccess = false;
+  if (!mb.slave()) {
+    mb.writeHreg(id, reg, val, cb);
+    while (mb.slave()) { mb.task(); }
+    return lastCmdSuccess;
+  }
+  return false;
+}
+
+// Read helper
+bool readHreg(uint8_t id, uint16_t reg, uint16_t *dest) {
+  lastCmdSuccess = false;
+  if (!mb.slave()) {
+    mb.readHreg(id, reg, dest, 1, cb);
+    while (mb.slave()) { mb.task(); }
+    return lastCmdSuccess;
+  }
+  return false;
+}
+
+// Change ID only
+void changeMotorID(uint8_t fromID, uint8_t toID) {
+  Serial.print("Changing ID from "); Serial.print(fromID);
+  Serial.print(" to "); Serial.println(toID);
+
+  if (writeHreg(fromID, REG_ID, toID)) {
+    Serial.println("ID changed successfully!");
+    newID = toID; // update newID for later use
+  } else {
+    Serial.println("Failed to change ID!");
+  }
+}
+
+// Configure motor
+void configureMotor(uint8_t id) {
+  Serial.print("Configuring motor with ID "); Serial.println(id);
+
+  writeHreg(id, REG_OP_MODE, 2); // Modbus speed regulation
+  delay(100);
+  writeHreg(id, REG_MODE, 1);    // Constant speed
+  delay(100);
+  writeHreg(id, REG_POSTSIG, 2); // Stop after timeout
+  delay(100);
+  writeHreg(id, REG_TIMEOUT, 5000); // 5 sec timeout
+  delay(100);
+
+  Serial.println("Motor configured!");
+}
+
+// Set speed 0–100%
+void setMotorSpeed(uint8_t id, float percent) {
+  if (percent < 0) percent = 0;
+  if (percent > 100) percent = 100;
+  uint16_t value = (uint16_t)(percent * 100);
+  writeHreg(id, REG_SPEED, value);
+  Serial.print("Speed set to "); Serial.print(percent); Serial.println("%");
+}
+
+// Scan all possible IDs
+void scanForMotors() {
+  Serial.println("Scanning for motors on Modbus...");
+  uint16_t val;
+  int foundCount = 0;
+  for (uint8_t id = 1; id <= 10; id++) {
+    if (readHreg(id, REG_ID, &val)) {
+      Serial.print("✅ Found motor at ID ");
+      Serial.print(id);
+      Serial.print(" (Reported ID register: ");
+      Serial.print(val);
+      Serial.println(")");
+      foundCount++;
+    }
+  }
+  if (foundCount == 0) {
+    Serial.println("❌ No motors found.");
+  } else {
+    Serial.print("Scan complete. Found ");
+    Serial.print(foundCount);
+    Serial.println(" motor(s).");
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  Serial5.begin(9600);
+  mb.begin(&Serial5, rs485DirectionPin);
+  mb.master();
+
+  Serial.println("Motor Config & Control Tool");
+  Serial.println("Commands:");
+  Serial.println("  id X Y   - change motor ID from X to Y");
+  Serial.println("  c        - configure motor with current newID");
+  Serial.println("  scan     - scan all IDs and list found motors");
+  Serial.println("  0-100    - set speed % on current newID");
+}
+
+void loop() {
+  mb.task();
+
+  if (Serial.available()) {
+    String input = Serial.readStringUntil('\n');
+    input.trim();
+
+    // ID change
+    if (input.startsWith("id ")) {
+      int space1 = input.indexOf(' ');
+      int space2 = input.indexOf(' ', space1 + 1);
+      if (space1 > 0 && space2 > space1) {
+        uint8_t fromID = input.substring(space1 + 1, space2).toInt();
+        uint8_t toID   = input.substring(space2 + 1).toInt();
+        changeMotorID(fromID, toID);
+      } else {
+        Serial.println("Usage: id <currentID> <newID>");
+      }
+    }
+    // Configure
+    else if (input.equalsIgnoreCase("c")) {
+      configureMotor(newID);
+    }
+    // Scan
+    else if (input.equalsIgnoreCase("scan")) {
+      scanForMotors();
+    }
+    // Speed
+    else {
+      float spd = input.toFloat();
+      setMotorSpeed(newID, spd);
+    }
+  }
+}

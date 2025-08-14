@@ -1,0 +1,146 @@
+#include <Arduino.h>
+#include "DFRobot_UI.h"
+#include "DFRobot_GDL.h"
+#include "DFRobot_Touch.h"
+#include <ModbusRTU.h>
+
+// Display and UI
+#define TFT_DC  3
+#define TFT_CS  10
+#define TFT_RST 2
+const int margin = 10;
+float tempSetPoint = 0;
+float setPoint = 0;
+bool isRunning = false;
+
+DFRobot_Touch_GT911 touch;
+DFRobot_ILI9488_320x480_HW_SPI screen(TFT_DC, TFT_CS, TFT_RST);
+DFRobot_UI ui(&screen, &touch);
+
+// Modbus
+ModbusRTU mb;
+const uint8_t slaveID = 1;
+const uint8_t rs485DirectionPin = 3;
+uint16_t windSpeedRaw = 0;
+float windSpeed = 0.0;
+
+// Modbus callback
+bool cb(Modbus::ResultCode event, uint16_t, void*) {
+  if (event != Modbus::EX_SUCCESS) {
+    Serial.print("Modbus error: 0x");
+    Serial.println(event, HEX);
+  }
+  return true;
+}
+
+// Button callback
+void btnCallback(DFRobot_UI::sButton_t &btn, DFRobot_UI::sTextBox_t &) {
+  String text((char *)btn.text);
+  if (text == "-") {
+    if (tempSetPoint > 0) tempSetPoint -= 0.5;
+  } else if (text == "+") {
+    if (tempSetPoint < 25) tempSetPoint += 0.5;
+  } else if (text == "Set") {
+    setPoint = tempSetPoint;
+  } else if (text == "START") {
+    isRunning = true;
+    Serial.println("System started");
+  } else if (text == "STOP") {
+    isRunning = false;
+    Serial.println("System stopped");
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  Serial5.begin(115200); // RS-485
+  mb.begin(&Serial5, rs485DirectionPin);
+  mb.master();
+
+  ui.begin();
+  ui.setTheme(DFRobot_UI::MODERN);
+  touch.setRotation(3);
+  screen.setRotation(3);
+
+  // Create UI Buttons
+  int buttonWidth = (screen.width() / 4) - (margin * 1.5);
+  int buttonHeight = 50;
+  int buttonY = screen.height() - buttonHeight - margin;
+
+  DFRobot_UI::sButton_t &btn1 = ui.creatButton();
+  btn1.setText((char*)"-"); btn1.fontSize = 6; btn1.bgColor = COLOR_RGB565_RED;
+  btn1.setCallback(btnCallback);
+  ui.draw(&btn1, margin, buttonY, buttonWidth, buttonHeight);
+
+  DFRobot_UI::sButton_t &btn2 = ui.creatButton();
+  btn2.setText((char*)"+"); btn2.fontSize = 6; btn2.bgColor = COLOR_RGB565_DGREEN;
+  btn2.setCallback(btnCallback);
+  ui.draw(&btn2, margin + buttonWidth + margin, buttonY, buttonWidth, buttonHeight);
+
+  DFRobot_UI::sButton_t &btn3 = ui.creatButton();
+  btn3.setText((char*)"Set"); btn3.fontSize = 4; btn3.bgColor = COLOR_RGB565_DCYAN;
+  btn3.setCallback(btnCallback);
+  ui.draw(&btn3, margin, buttonY - buttonHeight - margin, buttonWidth * 2 + margin, buttonHeight);
+
+  DFRobot_UI::sButton_t &btn4 = ui.creatButton();
+  btn4.setText((char*)"START"); btn4.fontSize = 4; btn4.bgColor = COLOR_RGB565_GREEN;
+  btn4.setCallback(btnCallback);
+  int btnRightX = screen.width() - (buttonWidth * 2 + margin);
+  int btnRightY = buttonY - buttonHeight - margin;
+  ui.draw(&btn4, btnRightX, btnRightY, buttonWidth * 2 + margin, buttonHeight);
+
+  DFRobot_UI::sButton_t &btn5 = ui.creatButton();
+  btn5.setText((char*)"STOP"); btn5.fontSize = 4; btn5.bgColor = COLOR_RGB565_RED;
+  btn5.setCallback(btnCallback);
+  int btnStopY = buttonY;
+  ui.draw(&btn5, btnRightX, btnStopY, buttonWidth * 2 + margin, buttonHeight);
+}
+
+void loop() {
+  ui.refresh();
+  mb.task(); // always run Modbus
+
+  // Modbus polling at 500ms
+  static uint32_t lastPoll = 0;
+  if (millis() - lastPoll > 200 && !mb.slave()) {
+    lastPoll = millis();
+    mb.readHreg(slaveID, 0, &windSpeedRaw, 1, cb);
+    windSpeed = windSpeedRaw / 100.0;
+  }
+
+  // Redraw screen only when values change
+  static float lastTempSetPoint = -1000, lastSetPoint = -1000, lastWindSpeed = -1000;
+  if (lastTempSetPoint != tempSetPoint || lastSetPoint != setPoint || lastWindSpeed != windSpeed) {
+    lastTempSetPoint = tempSetPoint;
+    lastSetPoint = setPoint;
+    lastWindSpeed = windSpeed;
+
+    int displayWidth = screen.width() / 2 - margin;
+    int clearHeight = margin * 19;
+    screen.fillRect(0, 0, displayWidth, clearHeight, COLOR_RGB565_BLACK);
+
+    screen.setTextColor(COLOR_RGB565_WHITE);
+    screen.setTextSize(2);
+    int labelX = margin;
+
+    screen.setCursor(labelX, margin * 1);
+    screen.print("WINDSPEED:");
+    screen.setTextSize(8);
+    char buffer[10];
+    sprintf(buffer, "%.1f", windSpeed);
+    screen.setCursor(labelX, margin * 3);
+    screen.print(buffer);
+
+    screen.setTextColor(COLOR_RGB565_WHITE);
+    screen.setTextSize(2);
+    screen.setCursor(labelX, margin * 10);
+    screen.print("SETPOINT:");
+
+    sprintf(buffer, "%.1f", tempSetPoint);
+    uint16_t color = (tempSetPoint == setPoint) ? COLOR_RGB565_GREEN : COLOR_RGB565_RED;
+    screen.setTextColor(color);
+    screen.setTextSize(8);
+    screen.setCursor(labelX, margin * 12);
+    screen.print(buffer);
+  }
+}

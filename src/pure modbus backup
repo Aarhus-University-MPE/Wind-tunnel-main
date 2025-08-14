@@ -1,0 +1,44 @@
+#include <Arduino.h>
+#include <ModbusRTU.h>
+
+ModbusRTU mb;
+
+const uint8_t slaveID = 1;                 // Modbus slave ID
+const uint8_t rs485DirectionPin = 3;       // RS-485 direction control pin
+uint16_t windSpeedRaw = 0;
+
+bool cb(Modbus::ResultCode event, uint16_t transactionId, void* data) {
+  // Print result code only
+  if (event != Modbus::EX_SUCCESS) {
+    Serial.print("Modbus error: 0x");
+    Serial.println(event, HEX);
+  }
+  return true;
+}
+
+void setup() {
+  Serial.begin(115200);
+  Serial5.begin(115200); // RS-485 serial
+
+  // Initialize Modbus on Serial1 with direction pin
+  mb.begin(&Serial5, rs485DirectionPin);
+  mb.master();
+}
+
+void loop() {
+  // Read 1 holding register at address 0 from slave ID 1
+  if (!mb.slave()) {
+    mb.readHreg(slaveID, 0, &windSpeedRaw, 1, cb);
+  }
+
+  mb.task();
+  yield();
+
+  static uint32_t lastPrint = 0;
+  if (millis() - lastPrint > 1000) {
+    lastPrint = millis();
+    float windSpeed = windSpeedRaw / 100.0;
+    Serial.print("Wind speed (m/s): ");
+    Serial.println(windSpeed, 2);
+  }
+}
