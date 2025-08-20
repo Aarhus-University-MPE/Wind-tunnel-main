@@ -4,6 +4,14 @@
 #include "DFRobot_Touch.h"
 #include <ModbusRTU.h>
 
+// =================== USER-ADJUSTABLE SETTINGS ===================
+const uint32_t openLoopTimeMs = 5000; // Time to run open-loop before PID takes over
+// PID parameters
+float kp = 1.5;
+float ki = 0.2;
+float kd = 0.05;
+// ================================================================
+
 // Display and UI
 #define TFT_DC 3
 #define TFT_CS 10
@@ -12,6 +20,8 @@ const int margin = 10;
 float tempSetPoint = 0;
 float setPoint = 0;
 bool isRunning = false;
+bool manualMode = false;
+float manualSpeed = 0;
 
 // Track last values and timing
 static float lastTempSetPoint = -1000, lastSetPoint = -1000;
@@ -32,57 +42,68 @@ float windSpeed = 0.0;
 
 // Motor IDs
 const uint8_t motorIDs[] = {2, 3, 4};
-float targetSpeedPercent = 0;
-bool keepSendingSpeed = false;
+float targetSpeed = 0;
 
 // Motor register
 #define REG_SPEED 102
 
+// Mapping table
 struct SetpointMap
 {
   float setpoint; // in m/s
-  float percent;  // 0-100 %
+  float setting;  // 0-100 %
 };
 
-// Your mapping table: you can add more points here
 const SetpointMap mapTable[] = {
     {0.0, 0.0},
-    {3.0, 10.0},
-    {6.0, 20.0},
-    {9.0, 30.0},
-    {12.0, 40.0},
-    {15.0, 50.0},
-    {18.0, 60.0},
-    {21.0, 70.0},
-    {24.0, 80.0},
-    {27.0, 90.0},
-    {30.0, 100.0},
+    {4.8, 15},
+    {6.3, 100},
+    {8.9, 350},
+    {11.5, 750},
+    {14.7, 1400},
+    {18.3, 2500},
+    {20.9, 3500},
+    {24.0, 5000},
+    {28.3, 7500},
+    {31.4, 10000},
 };
 
-float mapSetPointToPercent(float spd)
+float mapSetPointToSetting(float spd)
 {
   int tableSize = sizeof(mapTable) / sizeof(mapTable[0]);
 
-  // Clamp input to the bounds of the table
   if (spd <= mapTable[0].setpoint)
-    return mapTable[0].percent;
+    return mapTable[0].setting;
   if (spd >= mapTable[tableSize - 1].setpoint)
-    return mapTable[tableSize - 1].percent;
+    return mapTable[tableSize - 1].setting;
 
-  // Find interval spd fits into and linearly interpolate
   for (int i = 0; i < tableSize - 1; i++)
   {
     if (spd >= mapTable[i].setpoint && spd < mapTable[i + 1].setpoint)
     {
       float spanSet = mapTable[i + 1].setpoint - mapTable[i].setpoint;
-      float spanPct = mapTable[i + 1].percent - mapTable[i].percent;
+      float spanPct = mapTable[i + 1].setting - mapTable[i].setting;
       float frac = (spd - mapTable[i].setpoint) / spanSet;
-      return mapTable[i].percent + frac * spanPct;
+      return mapTable[i].setting + frac * spanPct;
     }
   }
-
-  // Should never get here
   return 0;
+}
+
+// PID state
+float pidIntegral = 0;
+float pidLastError = 0;
+
+bool pidActive = false;
+uint32_t pidStartTime = 0;
+
+void resetPidAndOpenLoop()
+{
+  pidActive = false;
+  pidStartTime = millis();
+  pidIntegral = 0;
+  pidLastError = 0;
+  Serial.println("Open loop mode re-started");
 }
 
 // Modbus callback
@@ -99,24 +120,19 @@ bool cb(Modbus::ResultCode event, uint16_t, void *)
 }
 
 // Send speed to all motors
-void sendSpeedToAll(float percent)
+void sendSpeedToAll(float setting)
 {
-  if (percent < 0)
-    percent = 0;
-  if (percent > 100)
-    percent = 100;
-  uint16_t value = (uint16_t)(percent * 100); // 0–100% -> 0–10000
 
   for (uint8_t i = 0; i < sizeof(motorIDs); i++)
   {
-    lastModbusID = motorIDs[i]; // Track current motor ID
-    mb.writeHreg(motorIDs[i], REG_SPEED, value, cb);
+    lastModbusID = motorIDs[i];
+    mb.writeHreg(motorIDs[i], REG_SPEED, setting, cb);
     while (mb.slave())
       mb.task();
   }
   Serial.print("Sent speed ");
-  Serial.print(percent);
-  Serial.println("% to all motors");
+  Serial.print(setting);
+  Serial.println("to all motors");
 }
 
 // Button callback
@@ -136,15 +152,19 @@ void btnCallback(DFRobot_UI::sButton_t &btn, DFRobot_UI::sTextBox_t &)
   else if (text == "Set")
   {
     setPoint = tempSetPoint;
+    if (isRunning)
+      resetPidAndOpenLoop(); // restart open loop when changing setpoint
   }
   else if (text == "START")
   {
     isRunning = true;
+    resetPidAndOpenLoop();
     Serial.println("System started");
   }
   else if (text == "STOP")
   {
     isRunning = false;
+    pidActive = false;
     sendSpeedToAll(0);
     Serial.println("System stopped");
   }
@@ -155,8 +175,8 @@ void setup()
   pinMode(33, OUTPUT);
   digitalWrite(33, LOW);
   Serial.begin(115200);
-  Serial5.begin(9600);   // RS-485/MODBUS for fan motors
-  Serial8.begin(115200); // RS-482/serial for anemometer
+  Serial5.begin(9600);
+  Serial8.begin(115200);
   mb.begin(&Serial5);
   mb.master();
 
@@ -165,7 +185,6 @@ void setup()
   touch.setRotation(3);
   screen.setRotation(3);
 
-  // Create UI Buttons
   int buttonWidth = (screen.width() / 4) - (margin * 1.5);
   int buttonHeight = 50;
   int buttonY = screen.height() - buttonHeight - margin;
@@ -212,62 +231,93 @@ void setup()
 void loop()
 {
   ui.refresh();
-  mb.task(); // always run Modbus
+  mb.task();
 
-  // Update targetSpeedPercent from setPoint (touchscreen) when running
-  if (isRunning)
-  {
-    targetSpeedPercent = mapSetPointToPercent(setPoint);
-  }
-
-  // Serial input override (optional)
+  // Check for serial manual speed input
   if (Serial.available())
   {
     String input = Serial.readStringUntil('\n');
     input.trim();
     float spd = input.toFloat();
-    targetSpeedPercent = spd;
+    if (spd >= 0 && spd <= 10000)
+    {
+      manualMode = true; // Enter manual mode permanently
+      manualSpeed = spd; // Store manual speed
+      Serial.print("Manual mode activated, speed = ");
+      Serial.println(manualSpeed);
+    }
   }
 
-  // Keep sending speed every 500ms if active
+  if (!manualMode) // ===== Normal PID/Open-loop operation =====
+  {
+    // Control logic
+    if (isRunning)
+    {
+      if (!pidActive)
+      {
+        targetSpeed = mapSetPointToSetting(setPoint);
+        if (millis() - pidStartTime >= openLoopTimeMs)
+        {
+          pidActive = true;
+          Serial.println("PID engaged");
+        }
+      }
+      else
+      {
+        float error = setPoint - windSpeed;
+        pidIntegral += error;
+        float derivative = error - pidLastError;
+        pidLastError = error;
+
+        float pidOutput = kp * error + ki * pidIntegral + kd * derivative;
+        targetSpeed = constrain(mapSetPointToSetting(setPoint) + pidOutput, 0, 10000);
+      }
+    }
+  }
+  else // ===== Manual mode =====
+  {
+    if (isRunning)
+    {
+      targetSpeed = manualSpeed; // Fixed speed in manual mode
+    }
+    else
+    {
+      targetSpeed = 0; // Stop motors if not running
+    }
+  }
+
+  // Send speed periodically
   static uint32_t lastSend = 0;
   if (isRunning && millis() - lastSend > 500 && !mb.slave())
   {
     lastSend = millis();
-    sendSpeedToAll(targetSpeedPercent);
+    sendSpeedToAll(targetSpeed);
   }
 
-  if (Serial8.available()) // checks for serial data from the anemometer
+  // Read anemometer
+  if (Serial8.available())
   {
-    String line = Serial8.readStringUntil('\n'); // read until newline
-    line.trim();                                 // remove any extra spaces or \r
+    String line = Serial8.readStringUntil('\n');
+    line.trim();
     if (line.length() > 0)
-    {
-      windSpeed = line.toFloat(); // convert text to float
-    }
-    Serial.print("wind speed recived: ");
-    Serial.println(windSpeed);
+      windSpeed = line.toFloat();
+    // Serial.print("wind speed received: ");
+    // Serial.println(windSpeed);
   }
 
+  // SETPOINT display
   if (lastTempSetPoint != tempSetPoint || lastSetPoint != setPoint)
   {
     lastTempSetPoint = tempSetPoint;
     lastSetPoint = setPoint;
-
     int displayWidth = screen.width() / 2 - margin;
     int clearHeight = margin * 9;
     int labelX = margin;
-
-    // Clear SETPOINT section
     screen.fillRect(0, margin * 10, displayWidth, clearHeight, COLOR_RGB565_BLACK);
-
-    // Draw label
     screen.setTextColor(COLOR_RGB565_WHITE);
     screen.setTextSize(2);
     screen.setCursor(labelX, margin * 10);
     screen.print("SETPOINT:");
-
-    // Draw value
     char buffer[10];
     sprintf(buffer, "%.1f", tempSetPoint);
     uint16_t color = (tempSetPoint == setPoint) ? COLOR_RGB565_GREEN : COLOR_RGB565_RED;
@@ -277,26 +327,19 @@ void loop()
     screen.print(buffer);
   }
 
-  // Update WINDSPEED display at most once per 1000ms
+  // WINDSPEED display
   if ((millis() - lastWindUpdate >= 500) && lastWindSpeed != windSpeed)
   {
     lastWindUpdate = millis();
     lastWindSpeed = windSpeed;
-
     int displayWidth = screen.width() / 2 - margin;
     int clearHeight = margin * 9;
     int labelX = margin;
-
-    // Clear WINDSPEED section
     screen.fillRect(0, 0, displayWidth, clearHeight, COLOR_RGB565_BLACK);
-
-    // Draw label
     screen.setTextColor(COLOR_RGB565_WHITE);
     screen.setTextSize(2);
     screen.setCursor(labelX, margin * 1);
     screen.print("WINDSPEED:");
-
-    // Draw value
     char buffer[10];
     sprintf(buffer, "%.1f", windSpeed);
     screen.setTextSize(8);
