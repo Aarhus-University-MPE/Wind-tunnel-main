@@ -69,7 +69,7 @@ const SetpointMap mapTable[] = {
     {31.4, 10000},
 };
 
-float mapSetPointToSetting(float spd)
+float mapSetPointToSetting(float spd) // function to map a setpoint (m/s) to a motor control value (0-10000)
 {
   int tableSize = sizeof(mapTable) / sizeof(mapTable[0]);
 
@@ -98,7 +98,7 @@ float pidLastError = 0;
 bool pidActive = false;
 uint32_t pidStartTime = 0;
 
-void resetPidAndOpenLoop()
+void resetPidAndOpenLoop() // function to reset PID and enable open loop control.
 {
   pidActive = false;
   pidStartTime = millis();
@@ -171,16 +171,18 @@ void btnCallback(DFRobot_UI::sButton_t &btn, DFRobot_UI::sTextBox_t &)
   }
 }
 
+// timer and flag to track connection to the anemometer.
 elapsedMillis anemometerTimeOut;
 bool anemometerLost = false;
 
 void setup()
 {
-  pinMode(33, OUTPUT);
+  pinMode(33, OUTPUT); // pin 33 is the direction pin for the anemometer RS485 bus. tied low to enable reciver.
   digitalWrite(33, LOW);
   Serial.begin(115200);  // debug
   Serial5.begin(9600);   // modbus
   Serial8.begin(115200); // RS485 anemometer
+
   mb.begin(&Serial5);
   mb.master();
 
@@ -237,7 +239,7 @@ void loop()
   ui.refresh();
   mb.task();
 
-  // Check for serial manual speed input
+  // Check for serial manual speed input used for debug. if serial data (0-10000) has been recived the system goes into manual mode. need power cycle to exit.
   if (Serial.available())
   {
     String input = Serial.readStringUntil('\n');
@@ -290,7 +292,7 @@ void loop()
     }
   }
 
-  // Send speed periodically
+  // Send speed periodically if all conditions are met.
   static uint32_t lastSend = 0;
   if (isRunning && millis() - lastSend > 500 && !mb.slave() && !anemometerLost)
   {
@@ -301,7 +303,7 @@ void loop()
   // Read anemometer
   if (Serial8.available())
   {
-    if (anemometerLost == true)
+    if (anemometerLost == true) // resets warning if connection with anemometer is reestablished.
     {
       anemometerLost = false;
       screen.fillRect(230, 10, 250, 160, COLOR_RGB565_BLACK);
@@ -315,7 +317,7 @@ void loop()
     // Serial.println(windSpeed);
   }
 
-  if (anemometerTimeOut >= 2500)
+  if (anemometerTimeOut >= 2500) // anemometer connection timeout to track connection and draw warning on screen.
   {
     if (anemometerLost == false)
     {
@@ -330,7 +332,7 @@ void loop()
     }
   }
 
-  // SETPOINT display
+  // updates the SETPOINT display
   if (lastTempSetPoint != tempSetPoint || lastSetPoint != setPoint)
   {
     lastTempSetPoint = tempSetPoint;
@@ -352,7 +354,7 @@ void loop()
     screen.print(buffer);
   }
 
-  // WINDSPEED display
+  // updates the WINDSPEED display
   if ((millis() - lastWindUpdate >= 500) && lastWindSpeed != windSpeed)
   {
     lastWindUpdate = millis();
