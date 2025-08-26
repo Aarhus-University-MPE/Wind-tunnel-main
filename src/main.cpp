@@ -322,6 +322,9 @@ void loop()
     if (anemometerLost == false)
     {
       anemometerLost = true;
+      isRunning = false;
+      pidActive = false;
+      sendSpeedToAll(0);
       screen.drawRGBBitmap(300, 10, (const uint16_t *)warning, 100, 100);
       screen.setTextColor(COLOR_RGB565_WHITE);
       screen.setTextSize(2);
