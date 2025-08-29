@@ -18,14 +18,14 @@ float kd = 0.05;
 #define TFT_CS 10
 #define TFT_RST 2
 const int margin = 10;
-float tempSetPoint = 0;
-float setPoint = 0;
+float tempSetPoint = 5;
+float setPoint = 5; //The actual saved setPoint. After "set" is pressed.
 bool isRunning = false;
 bool manualMode = false;
 float manualSpeed = 0;
 
 // Track last values and timing
-static float lastTempSetPoint = -1000, lastSetPoint = -1000;
+static float lastTempSetPoint = -1000, lastSetPoint = -1000; //The temporary sey-point
 static float lastWindSpeed = -1000;
 static uint32_t lastWindUpdate = 0;
 
@@ -142,7 +142,7 @@ void btnCallback(DFRobot_UI::sButton_t &btn, DFRobot_UI::sTextBox_t &)
   String text((char *)btn.text);
   if (text == "-")
   {
-    if (tempSetPoint > 0)
+    if (tempSetPoint > 5)
       tempSetPoint -= 0.5;
   }
   else if (text == "+")
@@ -180,7 +180,7 @@ void setup()
   pinMode(33, OUTPUT); // pin 33 is the direction pin for the anemometer RS485 bus. tied low to enable reciver.
   digitalWrite(33, LOW);
   Serial.begin(115200);  // debug
-  Serial5.begin(9600);   // modbus
+  Serial5.begin(9600);   // modbus motor
   Serial8.begin(115200); // RS485 anemometer
 
   mb.begin(&Serial5);
