@@ -172,8 +172,8 @@ void btnCallback(DFRobot_UI::sButton_t &btn, DFRobot_UI::sTextBox_t &)
 }
 
 // timer and flag to track connection to the anemometer.
-elapsedMillis anemometerTimeOut;
-bool anemometerLost = false;
+elapsedMillis anemometerTimeOut; //Teensy 4.1 timing liberary. Documented on website. 
+bool anemometerLost = false; //false = connection, true = not connected. 
 
 void setup()
 {
@@ -301,9 +301,9 @@ void loop()
   }
 
   // Read anemometer
-  if (Serial8.available())
+  if (Serial8.available()) 
   {
-    if (anemometerLost == true) // resets warning if connection with anemometer is reestablished.
+    if (anemometerLost == true) // resets warning if connection with anemometer is reestablished. Value is set to true in anemometerTimeout.
     {
       anemometerLost = false;
       screen.fillRect(230, 10, 250, 160, COLOR_RGB565_BLACK);
